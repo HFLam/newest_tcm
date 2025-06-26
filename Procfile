@@ -1,1 +1,1 @@
-web: python3 api_server.py 
+web: source /opt/venv/bin/activate && python3 api_server.py 
