@@ -790,10 +790,19 @@ class ResultIntegrator:
         
         return output.strip() if output.strip() else "No specific recommendations at this time."
 
-# Initialize global analyzer instances
-tongue_analyzer = TongueAnalyzer()
+# Initialize global analyzer instances with lazy loading
+tongue_analyzer = None
 questionnaire_analyzer = QuestionnaireAnalyzer()
 result_integrator = ResultIntegrator()
+
+def get_tongue_analyzer():
+    """Lazy load the tongue analyzer to avoid startup delays"""
+    global tongue_analyzer
+    if tongue_analyzer is None:
+        print("Loading tongue analyzer model...")
+        tongue_analyzer = TongueAnalyzer()
+        print("Tongue analyzer model loaded successfully")
+    return tongue_analyzer
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -801,7 +810,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'message': 'Tongue Analysis API is running',
-        'model_loaded': len(tongue_analyzer.categories) > 0
+        'server_ready': True
     })
 
 @app.route('/analyze', methods=['POST'])
@@ -861,7 +870,8 @@ def analyze_tongue():
         
         # Perform classification
         print("Starting classification...")
-        classification_result = tongue_analyzer.classify(temp_image_path)
+        analyzer = get_tongue_analyzer()
+        classification_result = analyzer.classify(temp_image_path)
         print(f"Classification complete: {classification_result['primary_classification']}")
         
         # Analyze questionnaire
@@ -877,7 +887,7 @@ def analyze_tongue():
         # Detect features for visualization (simplified)
         print("Detecting features...")
         try:
-            features = tongue_analyzer.detect_tongue_features(temp_image_path)
+            features = analyzer.detect_tongue_features(temp_image_path)
             print("Feature detection complete")
         except Exception as e:
             print(f"Feature detection failed: {e}")
@@ -888,7 +898,7 @@ def analyze_tongue():
         try:
             # Add random number to classification for display
             classification_with_number = f"{classification_result['primary_classification']} {random.randint(1, 3)}"
-            annotated_image = tongue_analyzer.create_annotated_image(temp_image_path, features, classification_with_number)
+            annotated_image = analyzer.create_annotated_image(temp_image_path, features, classification_with_number)
             print("Annotated image creation complete")
         except Exception as e:
             print(f"Annotated image creation failed: {e}")
@@ -975,7 +985,8 @@ def classify_only():
             })
         
         # Perform classification
-        classification_result = tongue_analyzer.classify(temp_image_path)
+        analyzer = get_tongue_analyzer()
+        classification_result = analyzer.classify(temp_image_path)
         
         # Clean up
         if os.path.exists(temp_image_path):
