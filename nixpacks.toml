@@ -15,4 +15,6 @@ cmds = ["echo 'Python app built successfully'"]
 cmd = "source /opt/venv/bin/activate && python3.11 api_server.py"
 
 [variables]
-PYTHON_VERSION = "3.11" 
+PYTHON_VERSION = "3.11"
+PYTHONUNBUFFERED = "1"
+PYTHONDONTWRITEBYTECODE = "1" 
