@@ -21,158 +21,47 @@ class TongueAnalyzer:
         Initialize the tongue analyzer for API use
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model_loaded = False
         
-        # Define categories with improved mapping
-        self.categories = [
-            '淡白舌白苔', '红舌黄苔', '淡白舌黄苔', '绛舌灰黑苔', '绛舌黄苔',
-            '绛舌白苔', '红舌灰黑苔', '红舌白苔', '淡红舌灰黑苔', '淡红舌黄苔',
-            '淡红舌白苔', '青紫舌白苔', '青紫舌黄苔', '青紫舌灰黑苔', '淡白舌灰黑苔'
-        ]
-        self.category_to_idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        # Load the classification model
+        if os.path.exists(model_path):
+            checkpoint = torch.load(model_path, map_location=self.device)
+            self.categories = checkpoint.get('categories', [])
+            self.category_to_idx = checkpoint.get('category_to_idx', {})
+            
+            self.model = models.resnet50(pretrained=False)
+            self.model.fc = nn.Linear(self.model.fc.in_features, len(self.categories))
+            
+            # Fix the state dict keys by removing "model." prefix if present
+            state_dict = checkpoint['model_state_dict']
+            new_state_dict = {}
+            for key, value in state_dict.items():
+                if key.startswith('model.'):
+                    new_key = key[6:]  # Remove "model." prefix
+                else:
+                    new_key = key
+                new_state_dict[new_key] = value
+            
+            self.model.load_state_dict(new_state_dict)
+            print(f"Loaded model with {len(self.categories)} classes")
+        else:
+            print(f"Model not found at {model_path}")
+            self.categories = [
+                '淡白舌白苔', '红舌黄苔', '淡白舌黄苔', '绛舌灰黑苔', '绛舌黄苔',
+                '绛舌白苔', '红舌灰黑苔', '红舌白苔', '淡红舌灰黑苔', '淡红舌黄苔',
+                '淡红舌白苔', '青紫舌白苔', '青紫舌黄苔', '青紫舌灰黑苔', '淡白舌灰黑苔'
+            ]
+            self.category_to_idx = {cat: idx for idx, cat in enumerate(self.categories)}
         
-        # Initialize model with better error handling
-        self._load_model(model_path)
+        self.model = self.model.to(self.device)
+        self.model.eval()
         
-        # Improved image transformations
+        # Define transformations
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                std=[0.229, 0.224, 0.225])
         ])
-        
-        # Additional preprocessing transform
-        self.preprocess_transform = transforms.Compose([
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
-            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.2)),
-        ])
-
-    def _load_model(self, model_path):
-        """Improved model loading with better error handling"""
-        try:
-            if os.path.exists(model_path):
-                print(f"Loading model from {model_path}...")
-                checkpoint = torch.load(model_path, map_location=self.device)
-                
-                # Update categories if available in checkpoint
-                if 'categories' in checkpoint:
-                    self.categories = checkpoint['categories']
-                    print(f"Loaded categories from checkpoint: {len(self.categories)} classes")
-                if 'category_to_idx' in checkpoint:
-                    self.category_to_idx = checkpoint['category_to_idx']
-                
-                # Initialize model
-                self.model = models.resnet50(pretrained=False)
-                self.model.fc = nn.Linear(self.model.fc.in_features, len(self.categories))
-                
-                # Handle different checkpoint formats
-                if 'model_state_dict' in checkpoint:
-                    state_dict = checkpoint['model_state_dict']
-                elif 'state_dict' in checkpoint:
-                    state_dict = checkpoint['state_dict']
-                else:
-                    state_dict = checkpoint
-                
-                # Fix state dict keys by removing "model." prefix if present
-                new_state_dict = {}
-                for key, value in state_dict.items():
-                    new_key = key.replace('model.', '') if key.startswith('model.') else key
-                    new_state_dict[new_key] = value
-                
-                self.model.load_state_dict(new_state_dict)
-                self.model = self.model.to(self.device)
-                self.model.eval()
-                self.model_loaded = True
-                print(f"Model loaded successfully with {len(self.categories)} classes")
-                
-            else:
-                print(f"Model file not found at {model_path}")
-                self._create_fallback_model()
-                
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            self._create_fallback_model()
-    
-    def _create_fallback_model(self):
-        """Create a simple fallback model for basic classification"""
-        print("Creating fallback model...")
-        self.model = models.resnet50(pretrained=True)
-        self.model.fc = nn.Linear(self.model.fc.in_features, len(self.categories))
-        self.model = self.model.to(self.device)
-        self.model.eval()
-        self.model_loaded = True
-        print("Fallback model created with pretrained weights")
-
-    def _enhance_image(self, image):
-        """Enhanced image preprocessing for better analysis"""
-        # Convert to numpy for OpenCV operations
-        img_array = np.array(image)
-        
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        if len(img_array.shape) == 3:
-            # Convert to LAB color space for better contrast enhancement
-            lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-            lab[:,:,0] = clahe.apply(lab[:,:,0])
-            enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
-        else:
-            enhanced = clahe.apply(img_array)
-        
-        # Apply bilateral filter to reduce noise while preserving edges
-        enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
-        
-        # Enhance tongue region specifically
-        enhanced = self._enhance_tongue_region(enhanced)
-        
-        return Image.fromarray(enhanced)
-    
-    def _enhance_tongue_region(self, image):
-        """Specifically enhance the tongue region for better feature detection"""
-        # Convert to HSV for better tongue detection
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        
-        # Improved tongue color range detection
-        # Multiple ranges to capture different tongue colors
-        tongue_ranges = [
-            ([0, 40, 40], [25, 255, 255]),    # Red-pink range
-            ([160, 40, 40], [180, 255, 255]), # Red range (wrap-around)
-            ([15, 30, 80], [35, 180, 255]),   # Yellow-pink range
-        ]
-        
-        combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        for lower, upper in tongue_ranges:
-            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-            combined_mask = cv2.bitwise_or(combined_mask, mask)
-        
-        # Morphological operations to clean up the mask
-        kernel = np.ones((7,7), np.uint8)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-        
-        # Find the largest contour (tongue region)
-        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest_contour = max(contours, key=cv2.contourArea)
-            
-            # Create a refined mask
-            refined_mask = np.zeros_like(combined_mask)
-            cv2.fillPoly(refined_mask, [largest_contour], 255)
-            
-            # Apply mask to enhance only tongue region
-            result = image.copy()
-            tongue_region = cv2.bitwise_and(image, image, mask=refined_mask)
-            
-            # Enhance contrast in tongue region
-            tongue_enhanced = cv2.convertScaleAbs(tongue_region, alpha=1.2, beta=10)
-            
-            # Combine enhanced tongue with original background
-            background = cv2.bitwise_and(image, image, mask=cv2.bitwise_not(refined_mask))
-            result = cv2.add(tongue_enhanced, background)
-            
-            return result
-        
-        return image
 
     def detect_tongue_features(self, image_path):
         """
@@ -198,434 +87,530 @@ class TongueAnalyzer:
         except Exception as e:
             print(f"Error in detect_tongue_features: {e}")
             return {'tongue_region': None, 'cracks': [], 'coating': [], 'color_variations': [], 'teeth_marks': []}
-    
+
     def _detect_tongue_region_and_features_simple(self, image):
         """
-        Detect tongue region and specific features with error handling
+        Simplified feature detection with highly sensitive crack detection and comprehensive color analysis
         """
         try:
-            print("Feature detection started")
-            # Convert to HSV for better color segmentation
-            hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+            print("Enhanced feature detection started")
+            height, width = image.shape[:2]
             
-            # Define multiple ranges for skin/tongue color (broader detection)
-            # Range 1: Pink/Red tones
-            lower_skin1 = np.array([0, 20, 50])
-            upper_skin1 = np.array([25, 255, 255])
-            # Range 2: Pale/Light tones  
-            lower_skin2 = np.array([0, 0, 80])
-            upper_skin2 = np.array([30, 50, 255])
-            # Range 3: Darker red tones
-            lower_skin3 = np.array([160, 20, 50])
-            upper_skin3 = np.array([180, 255, 255])
+            # Keep the larger tongue region - this is working well
+            region_width = int(width * 0.75)  # 75% of image width
+            region_height = int(height * 0.8)  # 80% of image height
+            start_x = (width - region_width) // 2
+            start_y = (height - region_height) // 2
             
-            # Create masks for tongue region using multiple color ranges
-            mask1 = cv2.inRange(hsv, lower_skin1, upper_skin1)
-            mask2 = cv2.inRange(hsv, lower_skin2, upper_skin2)
-            mask3 = cv2.inRange(hsv, lower_skin3, upper_skin3)
+            # HIGHLY SENSITIVE crack detection - more sensitive in the CENTER/MIDDLE of tongue
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
             
-            # Combine all masks
-            mask = cv2.bitwise_or(mask1, mask2)
-            mask = cv2.bitwise_or(mask, mask3)
+            # Define inner tongue region (central 70% of tongue area for better coverage)
+            inner_margin_x = int(region_width * 0.15)  # 15% margin from left/right
+            inner_margin_y = int(region_height * 0.15)  # 15% margin from top/bottom
+            inner_start_x = start_x + inner_margin_x
+            inner_start_y = start_y + inner_margin_y
+            inner_width = region_width - 2 * inner_margin_x
+            inner_height = region_height - 2 * inner_margin_y
             
-            # Morphological operations to clean up the mask
-            kernel = np.ones((5,5), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            # Extract only the inner tongue region for crack detection
+            inner_tongue = gray[inner_start_y:inner_start_y+inner_height, 
+                               inner_start_x:inner_start_x+inner_width]
             
-            # Find contours
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cracks = []
+            if inner_tongue.size > 0:
+                # MULTI-SCALE crack detection for maximum sensitivity
+                
+                # Scale 1: Very sensitive fine crack detection
+                blurred1 = cv2.GaussianBlur(inner_tongue, (3, 3), 0.5)  # Minimal blur
+                edges1 = cv2.Canny(blurred1, 30, 90)  # Very low thresholds for fine cracks
+                
+                # Scale 2: Medium crack detection
+                blurred2 = cv2.GaussianBlur(inner_tongue, (5, 5), 1.0)
+                edges2 = cv2.Canny(blurred2, 40, 110)
+                
+                # Scale 3: Larger crack detection
+                blurred3 = cv2.GaussianBlur(inner_tongue, (7, 7), 1.5)
+                edges3 = cv2.Canny(blurred3, 50, 130)
+                
+                # Combine all edge detections
+                combined_edges = cv2.bitwise_or(edges1, cv2.bitwise_or(edges2, edges3))
+                
+                # Morphological operations to enhance crack-like structures
+                kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+                kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                
+                # Close small gaps in cracks
+                combined_edges = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel_small, iterations=1)
+                combined_edges = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel_medium, iterations=1)
+                
+                # Multiple line detection passes with different sensitivities
+                all_lines = []
+                
+                # Pass 1: Very sensitive for fine cracks
+                lines1 = cv2.HoughLinesP(combined_edges, 1, np.pi/180, 
+                                        threshold=15,        # Very low threshold
+                                        minLineLength=12,    # Very short minimum length
+                                        maxLineGap=12)       # Large gap tolerance
+                if lines1 is not None:
+                    all_lines.extend(lines1)
+                
+                # Pass 2: Medium sensitivity
+                lines2 = cv2.HoughLinesP(combined_edges, 1, np.pi/180, 
+                                        threshold=20,        # Low threshold
+                                        minLineLength=18,    # Short minimum length
+                                        maxLineGap=10)       # Medium gap tolerance
+                if lines2 is not None:
+                    all_lines.extend(lines2)
+                
+                # Pass 3: Standard sensitivity for obvious cracks
+                lines3 = cv2.HoughLinesP(combined_edges, 1, np.pi/180, 
+                                        threshold=25,        # Standard threshold
+                                        minLineLength=25,    # Standard minimum length
+                                        maxLineGap=8)        # Small gap tolerance
+                if lines3 is not None:
+                    all_lines.extend(lines3)
+                
+                if all_lines:
+                    # Remove duplicate lines and validate
+                    validated_cracks = []
+                    
+                    for line in all_lines:
+                        x1, y1, x2, y2 = line[0]
+                        # Convert coordinates back to original image space
+                        orig_x1 = x1 + inner_start_x
+                        orig_y1 = y1 + inner_start_y
+                        orig_x2 = x2 + inner_start_x
+                        orig_y2 = y2 + inner_start_y
+                        
+                        # Medical validation: check line characteristics
+                        line_length = ((x2-x1)**2 + (y2-y1)**2)**0.5
+                        
+                        # Calculate line angle
+                        angle = np.arctan2(abs(y2-y1), abs(x2-x1)) * 180 / np.pi
+                        
+                        # Accept lines that could be cracks (more permissive criteria)
+                        if (line_length > 8 and line_length < 200 and  # Very wide range for crack length
+                            5 < x1 < inner_width-5 and 5 < x2 < inner_width-5 and  # Within bounds
+                            5 < y1 < inner_height-5 and 5 < y2 < inner_height-5):
+                            
+                            # Additional validation: check if line area has crack-like properties
+                            mid_x, mid_y = (x1 + x2) // 2, (y1 + y2) // 2
+                            if (3 < mid_x < inner_width-3 and 3 < mid_y < inner_height-3):
+                                # Sample area around the line to validate it's a real crack
+                                sample_area = inner_tongue[mid_y-2:mid_y+3, mid_x-2:mid_x+3]
+                                if sample_area.size > 0:
+                                    area_std = sample_area.std()
+                                    area_mean = sample_area.mean()
+                                    
+                                    # More permissive crack validation
+                                    if area_std > 5 and area_mean < inner_tongue.mean() + 10:  # Much more permissive
+                                        # Check for duplicates (avoid adding very similar lines)
+                                        is_duplicate = False
+                                        for existing_crack in validated_cracks:
+                                            ex1, ey1, ex2, ey2 = existing_crack[0][0], existing_crack[0][1], existing_crack[1][0], existing_crack[1][1]
+                                            # Calculate distance between line centers
+                                            dist = ((mid_x - (ex1+ex2)//2)**2 + (mid_y - (ey1+ey2)//2)**2)**0.5
+                                            if dist < 15:  # Too close to existing crack
+                                                is_duplicate = True
+                                                break
+                                        
+                                        if not is_duplicate:
+                                            validated_cracks.append(((orig_x1, orig_y1), (orig_x2, orig_y2)))
+                    
+                    cracks = validated_cracks
+                
+                # Limit to most significant cracks (allow more cracks to be detected)
+                cracks = cracks[:8]  # Increased from 4 to 8
+            
+            # COMPREHENSIVE COLOR VARIATION ANALYSIS
+            color_variations = []
+            try:
+                # Extract tongue region for color analysis
+                tongue_region = image[start_y:start_y+region_height, start_x:start_x+region_width]
+                
+                if tongue_region.size > 0:
+                    # Convert to LAB color space for perceptual color analysis
+                    lab_tongue = cv2.cvtColor(tongue_region, cv2.COLOR_RGB2LAB)
+                    hsv_tongue = cv2.cvtColor(tongue_region, cv2.COLOR_RGB2HSV)
+                    
+                    # Divide tongue into analysis regions (3x3 grid for detailed analysis)
+                    grid_rows, grid_cols = 3, 3
+                    region_h = int(region_height // grid_rows)
+                    region_w = int(region_width // grid_cols)
+                    
+                    # Calculate baseline color statistics for the entire tongue
+                    baseline_l = lab_tongue[:, :, 0].mean()  # Lightness
+                    baseline_a = lab_tongue[:, :, 1].mean()  # Green-Red
+                    baseline_b = lab_tongue[:, :, 2].mean()  # Blue-Yellow
+                    baseline_h = hsv_tongue[:, :, 0].mean()  # Hue
+                    baseline_s = hsv_tongue[:, :, 1].mean()  # Saturation
+                    
+                    # Analyze each grid region for color variations
+                    for row in range(grid_rows):
+                        for col in range(grid_cols):
+                            # Extract region
+                            y_start = int(row * region_h)
+                            y_end = int(min((row + 1) * region_h, region_height))
+                            x_start = int(col * region_w)
+                            x_end = int(min((col + 1) * region_w, region_width))
+                            
+                            region_lab = lab_tongue[y_start:y_end, x_start:x_end]
+                            region_hsv = hsv_tongue[y_start:y_end, x_start:x_end]
+                            
+                            if region_lab.size > 0:
+                                # Calculate color statistics for this region
+                                region_l = region_lab[:, :, 0].mean()
+                                region_a = region_lab[:, :, 1].mean()
+                                region_b = region_lab[:, :, 2].mean()
+                                region_h = region_hsv[:, :, 0].mean()
+                                region_s = region_hsv[:, :, 1].mean()
+                                
+                                # Calculate color differences from baseline
+                                l_diff = abs(region_l - baseline_l)
+                                a_diff = abs(region_a - baseline_a)
+                                b_diff = abs(region_b - baseline_b)
+                                h_diff = abs(region_h - baseline_h)
+                                s_diff = abs(region_s - baseline_s)
+                                
+                                # Check for significant color variations
+                                # Medical criteria: noticeable color changes that could indicate health issues
+                                significant_variation = False
+                                variation_type = ""
+                                
+                                # Lightness variation (pale/dark areas)
+                                if l_diff > 8:  # Noticeable lightness difference
+                                    significant_variation = True
+                                    variation_type = "lightness"
+                                
+                                # Color cast variations (redness, yellowness)
+                                elif a_diff > 6 or b_diff > 8:  # Color cast differences
+                                    significant_variation = True
+                                    variation_type = "color_cast"
+                                
+                                # Saturation variations (dull/vivid areas)
+                                elif s_diff > 15:  # Saturation differences
+                                    significant_variation = True
+                                    variation_type = "saturation"
+                                
+                                # Hue variations (different color tones)
+                                elif h_diff > 12:  # Hue differences
+                                    significant_variation = True
+                                    variation_type = "hue"
+                                
+                                if significant_variation:
+                                    # Convert region coordinates back to original image space
+                                    orig_x = int(start_x + x_start)
+                                    orig_y = int(start_y + y_start)
+                                    orig_w = int(x_end - x_start)
+                                    orig_h = int(y_end - y_start)
+                                    
+                                    color_variations.append({
+                                        'region': (orig_x, orig_y, orig_w, orig_h),
+                                        'type': variation_type,
+                                        'intensity': max(l_diff, a_diff, b_diff, h_diff/2, s_diff/2)
+                                    })
+                    
+                    # Additional spot analysis for localized color changes
+                    # Use k-means clustering to find distinct color regions
+                    try:
+                        # Reshape image for k-means
+                        pixel_data = lab_tongue.reshape(-1, 3).astype(np.float32)
+                        
+                        # Perform k-means clustering with 4-6 clusters
+                        k = min(5, max(3, len(pixel_data) // 1000))  # Adaptive cluster count
+                        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+                        _, labels, centers = cv2.kmeans(pixel_data, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+                        
+                        # Analyze cluster distribution to find unusual color concentrations
+                        unique_labels, counts = np.unique(labels, return_counts=True)
+                        total_pixels = len(labels)
+                        
+                        for i, (label, count) in enumerate(zip(unique_labels, counts)):
+                            percentage = count / total_pixels
+                            
+                            # If a color cluster represents a small but significant portion (localized variation)
+                            if 0.05 < percentage < 0.25:  # 5-25% of tongue area
+                                # Find the spatial distribution of this cluster
+                                cluster_mask = (labels == label).reshape(int(region_height), int(region_width))
+                                
+                                # Find contours of this color cluster
+                                cluster_mask_uint8 = cluster_mask.astype(np.uint8) * 255
+                                contours, _ = cv2.findContours(cluster_mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                
+                                for contour in contours:
+                                    area = cv2.contourArea(contour)
+                                    if area > 200:  # Significant area
+                                        x, y, w, h = cv2.boundingRect(contour)
+                                        # Convert to original image coordinates
+                                        orig_x = int(start_x + x)
+                                        orig_y = int(start_y + y)
+                                        
+                                        color_variations.append({
+                                            'region': (orig_x, orig_y, w, h),
+                                            'type': 'cluster',
+                                            'intensity': percentage * 100  # Percentage as intensity
+                                        })
+                    
+                    except Exception as e:
+                        print(f"K-means color analysis error: {e}")
+                    
+                    # Sort by intensity and limit results
+                    color_variations.sort(key=lambda x: x['intensity'], reverse=True)
+                    color_variations = color_variations[:6]  # Top 6 most significant variations
+                    
+            except Exception as e:
+                print(f"Error in color variation detection: {e}")
+                color_variations = []
+
+            # Medical-grade teeth marks detection - ONLY on BOTTOM HALF edges (where teeth contact)
+            teeth_marks = []
+            try:
+                # Define tongue edge regions - only bottom half where teeth actually contact
+                edge_thickness = 18  # How deep into the tongue to check for indentations
+                
+                # Calculate bottom half region (tongue tip is at bottom of image)
+                bottom_half_start_y = start_y + region_height // 2  # Start from middle
+                bottom_half_end_y = start_y + region_height - 20    # End near bottom with margin
+                
+                # Left edge of tongue - BOTTOM HALF ONLY (where teeth contact)
+                left_edge_x = start_x
+                left_indented_areas = []  # Collect continuous indented areas
+                
+                for y_pos in range(bottom_half_start_y, bottom_half_end_y, 15):  # Every 15 pixels for better coverage
+                    # Sample area just inside the left edge
+                    sample_x = left_edge_x + 8  # 8 pixels inside the tongue
+                    if (sample_x + edge_thickness < width and y_pos + edge_thickness < height):
+                        edge_area = gray[y_pos:y_pos+edge_thickness, sample_x:sample_x+edge_thickness]
+                        if edge_area.size > 0:
+                            # Check for indentation pattern (darker/shadowed areas indicating depth)
+                            edge_variance = edge_area.var()
+                            edge_mean = edge_area.mean()
+                            edge_std = edge_area.std()
+                            
+                            # Teeth marks create shadows/indentations with specific patterns
+                            if edge_variance > 230 and edge_mean < 120 and edge_std > 12:  # Slightly more sensitive
+                                left_indented_areas.append(y_pos)
+                
+                # Group continuous indented areas into tilted rectangles following edge contour
+                if left_indented_areas:
+                    # Group nearby points into continuous regions
+                    current_group = [left_indented_areas[0]]
+                    for y in left_indented_areas[1:]:
+                        if y - current_group[-1] <= 25:  # Within 25 pixels = same indented area
+                            current_group.append(y)
+                        else:
+                            # Create tilted rectangle for this indented area following left edge
+                            if len(current_group) >= 2:  # At least 2 detection points
+                                area_start = min(current_group) - 10
+                                area_end = max(current_group) + edge_thickness + 10
+                                # Create tilted rectangle following the left edge contour
+                                # Left edge is typically vertical, so create a slightly tilted rectangle
+                                x1, y1 = left_edge_x - 20, area_start  # Top-left
+                                x2, y2 = left_edge_x + 35, area_start - 5  # Top-right (slightly inward)
+                                x3, y3 = left_edge_x + 30, area_end + 5  # Bottom-right (slightly inward)
+                                x4, y4 = left_edge_x - 15, area_end  # Bottom-left
+                                teeth_marks.append((x1, y1, x2, y2, x3, y3, x4, y4))  # Tilted rectangle
+                            current_group = [y]
+                    
+                    # Handle the last group
+                    if len(current_group) >= 2:
+                        area_start = min(current_group) - 10
+                        area_end = max(current_group) + edge_thickness + 10
+                        x1, y1 = left_edge_x - 20, area_start
+                        x2, y2 = left_edge_x + 35, area_start - 5
+                        x3, y3 = left_edge_x + 30, area_end + 5
+                        x4, y4 = left_edge_x - 15, area_end
+                        teeth_marks.append((x1, y1, x2, y2, x3, y3, x4, y4))
+                
+                # Right edge of tongue - BOTTOM HALF ONLY (where teeth contact)
+                right_edge_x = start_x + region_width
+                right_indented_areas = []  # Collect continuous indented areas
+                
+                for y_pos in range(bottom_half_start_y, bottom_half_end_y, 15):  # Every 15 pixels for better coverage
+                    # Sample area just inside the right edge
+                    sample_x = right_edge_x - edge_thickness - 8  # 8 pixels inside the tongue
+                    if (sample_x >= 0 and y_pos + edge_thickness < height):
+                        edge_area = gray[y_pos:y_pos+edge_thickness, sample_x:sample_x+edge_thickness]
+                        if edge_area.size > 0:
+                            # Check for indentation pattern
+                            edge_variance = edge_area.var()
+                            edge_mean = edge_area.mean()
+                            edge_std = edge_area.std()
+                            
+                            if edge_variance > 230 and edge_mean < 120 and edge_std > 12:  # Slightly more sensitive
+                                right_indented_areas.append(y_pos)
+                
+                # Group continuous indented areas into tilted rectangles following right edge contour
+                if right_indented_areas:
+                    current_group = [right_indented_areas[0]]
+                    for y in right_indented_areas[1:]:
+                        if y - current_group[-1] <= 25:  # Within 25 pixels = same indented area
+                            current_group.append(y)
+                        else:
+                            # Create tilted rectangle for this indented area following right edge
+                            if len(current_group) >= 2:
+                                area_start = min(current_group) - 10
+                                area_end = max(current_group) + edge_thickness + 10
+                                # Create tilted rectangle following the right edge contour
+                                # Right edge is typically vertical, so create a slightly tilted rectangle
+                                x1, y1 = right_edge_x - 35, area_start - 5  # Top-left (slightly inward)
+                                x2, y2 = right_edge_x + 20, area_start  # Top-right
+                                x3, y3 = right_edge_x + 15, area_end  # Bottom-right
+                                x4, y4 = right_edge_x - 30, area_end + 5  # Bottom-left (slightly inward)
+                                teeth_marks.append((x1, y1, x2, y2, x3, y3, x4, y4))  # Tilted rectangle
+                            current_group = [y]
+                    
+                    # Handle the last group
+                    if len(current_group) >= 2:
+                        area_start = min(current_group) - 10
+                        area_end = max(current_group) + edge_thickness + 10
+                        x1, y1 = right_edge_x - 35, area_start - 5
+                        x2, y2 = right_edge_x + 20, area_start
+                        x3, y3 = right_edge_x + 15, area_end
+                        x4, y4 = right_edge_x - 30, area_end + 5
+                        teeth_marks.append((x1, y1, x2, y2, x3, y3, x4, y4))
+                
+                # Bottom edge of tongue (horizontal indentations) - where front teeth contact
+                bottom_edge_y = start_y + region_height
+                bottom_indented_areas = []  # Collect continuous indented areas
+                
+                for x_pos in range(start_x + 60, start_x + region_width - 60, 20):  # Every 20 pixels along bottom edge
+                    # Sample area just inside the bottom edge
+                    sample_y = bottom_edge_y - edge_thickness - 8  # 8 pixels inside the tongue
+                    if (x_pos + edge_thickness < width and sample_y >= 0):
+                        edge_area = gray[sample_y:sample_y+edge_thickness, x_pos:x_pos+edge_thickness]
+                        if edge_area.size > 0:
+                            edge_variance = edge_area.var()
+                            edge_mean = edge_area.mean()
+                            edge_std = edge_area.std()
+                            
+                            if edge_variance > 200 and edge_mean < 115 and edge_std > 10:  # Front teeth indentations
+                                bottom_indented_areas.append(x_pos)
+                
+                # Group continuous bottom indented areas into tilted rectangles following bottom edge contour
+                if bottom_indented_areas:
+                    current_group = [bottom_indented_areas[0]]
+                    for x in bottom_indented_areas[1:]:
+                        if x - current_group[-1] <= 30:  # Within 30 pixels = same indented area
+                            current_group.append(x)
+                        else:
+                            # Create tilted rectangle for this indented area following bottom edge
+                            if len(current_group) >= 2:
+                                area_start = min(current_group) - 15
+                                area_end = max(current_group) + edge_thickness + 15
+                                # Create tilted rectangle following the bottom edge contour (horizontal)
+                                # Bottom edge follows tongue curve, so create a slightly curved rectangle
+                                x1, y1 = area_start, bottom_edge_y - 45  # Top-left
+                                x2, y2 = area_end, bottom_edge_y - 40  # Top-right (slightly lower for curve)
+                                x3, y3 = area_end - 5, bottom_edge_y + 15  # Bottom-right (slightly inward)
+                                x4, y4 = area_start + 5, bottom_edge_y + 10  # Bottom-left (slightly inward)
+                                teeth_marks.append((x1, y1, x2, y2, x3, y3, x4, y4))  # Tilted rectangle
+                            current_group = [x]
+                    
+                    # Handle the last group
+                    if len(current_group) >= 2:
+                        area_start = min(current_group) - 15
+                        area_end = max(current_group) + edge_thickness + 15
+                        x1, y1 = area_start, bottom_edge_y - 45
+                        x2, y2 = area_end, bottom_edge_y - 40
+                        x3, y3 = area_end - 5, bottom_edge_y + 15
+                        x4, y4 = area_start + 5, bottom_edge_y + 10
+                        teeth_marks.append((x1, y1, x2, y2, x3, y3, x4, y4))
+                
+                # Limit to most significant teeth marks (medical reality: usually 2-5 visible marks in bottom half)
+                teeth_marks = teeth_marks[:5]
+                
+            except Exception as e:
+                print(f"Error in tooth marks detection: {e}")
+                teeth_marks = []
             
             features = {
-                'tongue_region': None,
-                'cracks': [],
-                'coating': [],
-                'color_variations': [],
-                'teeth_marks': []
+                'tongue_region': (start_x, start_y, region_width, region_height),
+                'cracks': cracks,
+                'coating': [],  # Keep coating empty for simplicity
+                'color_variations': color_variations,
+                'teeth_marks': teeth_marks
             }
             
-            if contours:
-                # Find the largest contour (likely the tongue)
-                largest_contour = max(contours, key=cv2.contourArea)
-                
-                # Get bounding rectangle
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                features['tongue_region'] = (x, y, w, h)
-                
-                print(f"Tongue region detected: {x}, {y}, {w}, {h}")
-                
-                # Detect cracks (fissures) using edge detection
-                try:
-                    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                    edges = cv2.Canny(gray, 50, 150)
-                    
-                    # Find lines that could be cracks
-                    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, 
-                                           minLineLength=30, maxLineGap=10)
-                    
-                    if lines is not None:
-                        for line in lines:
-                            x1, y1, x2, y2 = line[0]
-                            # Check if line is within tongue region
-                            if (x <= x1 <= x+w and x <= x2 <= x+w and 
-                                y <= y1 <= y+h and y <= y2 <= y+h):
-                                features['cracks'].append(((x1, y1), (x2, y2)))
-                    
-                    print(f"Detected {len(features['cracks'])} cracks")
-                except Exception as e:
-                    print(f"Crack detection failed: {e}")
-                
-                # Detect coating (areas with different texture/color)
-                try:
-                    roi = image[y:y+h, x:x+w]
-                    if roi.size > 0:
-                        # Detect areas with different brightness (potential coating)
-                        gray_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-                        _, thresh = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                        
-                        coating_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        for contour in coating_contours:
-                            if cv2.contourArea(contour) > 100:  # Filter small areas
-                                cx, cy, cw, ch = cv2.boundingRect(contour)
-                                features['coating'].append((x + cx, y + cy, cw, ch))
-                    
-                    print(f"Detected {len(features['coating'])} coating areas")
-                except Exception as e:
-                    print(f"Coating detection failed: {e}")
-                
-                # Detect color variations
-                try:
-                    roi = image[y:y+h, x:x+w]
-                    if roi.size > 0:
-                        # Convert to LAB color space for better color analysis
-                        lab_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2LAB)
-                        
-                        # Analyze color variations using standard deviation
-                        mean_color = np.mean(lab_roi, axis=(0, 1))
-                        std_color = np.std(lab_roi, axis=(0, 1))
-                        
-                        # If there's significant color variation, mark regions
-                        if np.sum(std_color) > 30:  # Threshold for color variation
-                            # Create grid to analyze different regions
-                            grid_size = 20
-                            for i in range(0, h, grid_size):
-                                for j in range(0, w, grid_size):
-                                    region = lab_roi[i:i+grid_size, j:j+grid_size]
-                                    if region.size > 0:
-                                        region_mean = np.mean(region, axis=(0, 1))
-                                        # Check if this region differs significantly from overall mean
-                                        if np.linalg.norm(region_mean - mean_color) > 20:
-                                            features['color_variations'].append((x + j, y + i, min(grid_size, w-j), min(grid_size, h-i)))
-                    
-                    print(f"Detected {len(features['color_variations'])} color variations")
-                except Exception as e:
-                    print(f"Color variation detection failed: {e}")
-                
-                # Detect teeth marks (scalloped edges)
-                try:
-                    # Analyze the contour for irregularities that might indicate teeth marks
-                    epsilon = 0.02 * cv2.arcLength(largest_contour, True)
-                    approx = cv2.approxPolyDP(largest_contour, epsilon, True)
-                    
-                    # Look for indentations along the edges
-                    hull = cv2.convexHull(largest_contour, returnPoints=True)
-                    hull_area = cv2.contourArea(hull)
-                    contour_area = cv2.contourArea(largest_contour)
-                    
-                    # If there's a significant difference, there might be teeth marks
-                    if hull_area > 0 and (hull_area - contour_area) / hull_area > 0.05:
-                        # Find defects in the convex hull
-                        hull_indices = cv2.convexHull(largest_contour, returnPoints=False)
-                        defects = cv2.convexityDefects(largest_contour, hull_indices)
-                        
-                        if defects is not None:
-                            for i in range(defects.shape[0]):
-                                s, e, f, d = defects[i, 0]
-                                far = tuple(largest_contour[f][0])
-                                # Mark significant defects as potential teeth marks
-                                if d > 1000:  # Threshold for defect depth
-                                    features['teeth_marks'].append((far[0], far[1], 10, 10))
-                    
-                    print(f"Detected {len(features['teeth_marks'])} teeth marks")
-                except Exception as e:
-                    print(f"Teeth mark detection failed: {e}")
-            
-            print(f"Feature detection complete: {features}")
+            print(f"Enhanced features: tongue_region={features['tongue_region']}, cracks={len(cracks)}, color_variations={len(color_variations)}, teeth_marks={len(teeth_marks)}")
             return features
-            
         except Exception as e:
-            print(f"Error in feature detection: {e}")
+            print(f"Error in enhanced feature detection: {e}")
             return {'tongue_region': None, 'cracks': [], 'coating': [], 'color_variations': [], 'teeth_marks': []}
 
-    def _get_default_features(self):
-        """Return default features when detection fails"""
-        return {
-            'tongue_region': None,
-            'cracks': [],
-            'coating': [],
-            'color_variations': [],
-            'teeth_marks': [],
-            'shape_analysis': {'elongated': False, 'swollen': False}
-        }
-
-    def _advanced_feature_detection(self, image):
+    def _detect_tongue_region_and_features(self, image):
         """
-        Advanced feature detection using multiple algorithms
+        Detect tongue region and specific features
         """
+        # Convert to HSV for better color segmentation
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        
+        # Define range for skin/tongue color (adjust these values based on your images)
+        lower_skin = np.array([0, 20, 70])
+        upper_skin = np.array([20, 255, 255])
+        
+        # Create mask for tongue region
+        mask = cv2.inRange(hsv, lower_skin, upper_skin)
+        
+        # Morphological operations to clean up the mask
+        kernel = np.ones((5,5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         features = {
             'tongue_region': None,
             'cracks': [],
             'coating': [],
             'color_variations': [],
-            'teeth_marks': [],
-            'shape_analysis': {'elongated': False, 'swollen': False}
+            'teeth_marks': []
         }
         
-        # Step 1: Better tongue segmentation
-        tongue_mask = self._segment_tongue_advanced(image)
-        
-        if tongue_mask is not None:
-            # Get tongue region
-            contours, _ = cv2.findContours(tongue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                largest_contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                features['tongue_region'] = (x, y, w, h)
+        if contours:
+            # Find the largest contour (likely the tongue)
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            features['tongue_region'] = (x, y, w, h)
+            
+            # Detect cracks (fissures) using edge detection
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # Find lines that could be cracks
+            lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, 
+                                   minLineLength=30, maxLineGap=10)
+            
+            if lines is not None:
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    # Check if line is within tongue region
+                    if (x <= x1 <= x+w and x <= x2 <= x+w and 
+                        y <= y1 <= y+h and y <= y2 <= y+h):
+                        features['cracks'].append(((x1, y1), (x2, y2)))
+            
+            # Detect coating (areas with different texture/color)
+            roi = image[y:y+h, x:x+w]
+            if roi.size > 0:
+                # Detect areas with different brightness (potential coating)
+                gray_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+                _, thresh = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 
-                # Extract tongue ROI
-                tongue_roi = image[y:y+h, x:x+w]
-                mask_roi = tongue_mask[y:y+h, x:x+w]
-                
-                # Step 2: Advanced crack detection
-                features['cracks'] = self._detect_cracks_advanced(tongue_roi, mask_roi, (x, y))
-                
-                # Step 3: Improved coating detection
-                features['coating'] = self._detect_coating_advanced(tongue_roi, mask_roi, (x, y))
-                
-                # Step 4: Color variation analysis
-                features['color_variations'] = self._analyze_color_variations(tongue_roi, mask_roi, (x, y))
-                
-                # Step 5: Shape analysis
-                features['shape_analysis'] = self._analyze_tongue_shape(largest_contour)
+                coating_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in coating_contours:
+                    if cv2.contourArea(contour) > 100:  # Filter small areas
+                        cx, cy, cw, ch = cv2.boundingRect(contour)
+                        features['coating'].append((x + cx, y + cy, cw, ch))
         
         return features
-    
-    def _segment_tongue_advanced(self, image):
-        """Advanced tongue segmentation using multiple techniques"""
-        # Convert to different color spaces
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
-        
-        # Method 1: HSV-based segmentation with multiple ranges
-        hsv_mask = self._create_hsv_tongue_mask(hsv)
-        
-        # Method 2: LAB-based segmentation
-        lab_mask = self._create_lab_tongue_mask(lab)
-        
-        # Method 3: Watershed segmentation
-        watershed_mask = self._create_watershed_mask(image)
-        
-        # Combine masks using voting
-        combined_mask = cv2.bitwise_and(hsv_mask, lab_mask)
-        combined_mask = cv2.bitwise_or(combined_mask, watershed_mask)
-        
-        # Refine mask
-        kernel = np.ones((5,5), np.uint8)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-        
-        return combined_mask
-    
-    def _create_hsv_tongue_mask(self, hsv):
-        """Create tongue mask using HSV color space"""
-        # Multiple HSV ranges for different tongue colors
-        ranges = [
-            ([0, 30, 50], [15, 255, 255]),    # Pink-red
-            ([160, 30, 50], [180, 255, 255]), # Red (wrap)
-            ([10, 20, 80], [25, 180, 255]),   # Light pink
-        ]
-        
-        combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        for lower, upper in ranges:
-            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-            combined_mask = cv2.bitwise_or(combined_mask, mask)
-        
-        return combined_mask
-    
-    def _create_lab_tongue_mask(self, lab):
-        """Create tongue mask using LAB color space"""
-        # LAB ranges for tongue colors
-        # A channel: green-red, B channel: blue-yellow
-        l_min, a_min, b_min = 50, 115, 125  # Typical tongue color range
-        l_max, a_max, b_max = 200, 145, 155
-        
-        mask = cv2.inRange(lab, (l_min, a_min, b_min), (l_max, a_max, b_max))
-        return mask
-    
-    def _create_watershed_mask(self, image):
-        """Create tongue mask using watershed segmentation"""
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        
-        # Apply threshold
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Noise removal
-        kernel = np.ones((3,3), np.uint8)
-        opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
-        
-        # Sure background area
-        sure_bg = cv2.dilate(opening, kernel, iterations=3)
-        
-        # Find sure foreground area
-        dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
-        _, sure_fg = cv2.threshold(dist_transform, 0.7*dist_transform.max(), 255, 0)
-        
-        return sure_fg.astype(np.uint8)
-    
-    def _detect_cracks_advanced(self, tongue_roi, mask_roi, offset):
-        """Advanced crack detection using multiple edge detection methods"""
-        if tongue_roi.size == 0:
-            return []
-        
-        gray = cv2.cvtColor(tongue_roi, cv2.COLOR_RGB2GRAY)
-        
-        # Method 1: Canny edge detection with multiple thresholds
-        edges1 = cv2.Canny(gray, 30, 100)
-        edges2 = cv2.Canny(gray, 50, 150)
-        combined_edges = cv2.bitwise_or(edges1, edges2)
-        
-        # Method 2: Ridge detection using custom kernel
-        ridge_kernel = np.array([[-1, -1, -1],
-                                [-1,  8, -1],
-                                [-1, -1, -1]])
-        ridge_response = cv2.filter2D(gray, cv2.CV_32F, ridge_kernel)
-        ridge_response = np.abs(ridge_response)
-        _, ridge_binary = cv2.threshold(ridge_response, 50, 255, cv2.THRESH_BINARY)
-        
-        # Combine edge responses
-        final_edges = cv2.bitwise_or(combined_edges, ridge_binary.astype(np.uint8))
-        
-        # Apply mask to keep only tongue edges
-        final_edges = cv2.bitwise_and(final_edges, mask_roi)
-        
-        # Detect lines using HoughLinesP with optimized parameters
-        lines = cv2.HoughLinesP(final_edges, 1, np.pi/180, threshold=20, 
-                               minLineLength=15, maxLineGap=5)
-        
-        cracks = []
-        if lines is not None:
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                # Filter lines by length and orientation
-                length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
-                if length > 10:  # Minimum crack length
-                    # Adjust coordinates with offset
-                    cracks.append(((x1 + offset[0], y1 + offset[1]), 
-                                 (x2 + offset[0], y2 + offset[1])))
-        
-        return cracks
-    
-    def _detect_coating_advanced(self, tongue_roi, mask_roi, offset):
-        """Advanced coating detection using texture analysis"""
-        if tongue_roi.size == 0:
-            return []
-        
-        gray = cv2.cvtColor(tongue_roi, cv2.COLOR_RGB2GRAY)
-        
-        # Method 1: Local Binary Pattern for texture analysis
-        from skimage.feature import local_binary_pattern
-        
-        # Calculate LBP
-        radius = 3
-        n_points = 8 * radius
-        lbp = local_binary_pattern(gray, n_points, radius, method='uniform')
-        
-        # Threshold LBP to find textured regions (coating)
-        lbp_thresh = np.percentile(lbp, 75)  # Top 25% textured regions
-        _, coating_mask = cv2.threshold(lbp.astype(np.uint8), lbp_thresh, 255, cv2.THRESH_BINARY)
-        
-        # Apply tongue mask
-        coating_mask = cv2.bitwise_and(coating_mask, mask_roi)
-        
-        # Find coating regions
-        coating_contours, _ = cv2.findContours(coating_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        coating_areas = []
-        for contour in coating_contours:
-            if cv2.contourArea(contour) > 50:  # Minimum coating area
-                x, y, w, h = cv2.boundingRect(contour)
-                coating_areas.append((x + offset[0], y + offset[1], w, h))
-        
-        return coating_areas
-    
-    def _analyze_color_variations(self, tongue_roi, mask_roi, offset):
-        """Analyze color variations in the tongue"""
-        if tongue_roi.size == 0:
-            return []
-        
-        # Convert to HSV for better color analysis
-        hsv_roi = cv2.cvtColor(tongue_roi, cv2.COLOR_RGB2HSV)
-        
-        # Apply mask
-        masked_hsv = cv2.bitwise_and(hsv_roi, hsv_roi, mask=mask_roi)
-        
-        # Calculate color statistics
-        h_values = masked_hsv[:,:,0][mask_roi > 0]
-        s_values = masked_hsv[:,:,1][mask_roi > 0]
-        v_values = masked_hsv[:,:,2][mask_roi > 0]
-        
-        color_variations = []
-        
-        # Detect unusual color regions
-        h_mean, h_std = np.mean(h_values), np.std(h_values)
-        unusual_color_mask = np.abs(masked_hsv[:,:,0] - h_mean) > 2 * h_std
-        unusual_color_mask = unusual_color_mask.astype(np.uint8) * 255
-        unusual_color_mask = cv2.bitwise_and(unusual_color_mask, mask_roi)
-        
-        # Find unusual color regions
-        color_contours, _ = cv2.findContours(unusual_color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in color_contours:
-            if cv2.contourArea(contour) > 30:
-                x, y, w, h = cv2.boundingRect(contour)
-                color_variations.append((x + offset[0], y + offset[1], w, h))
-        
-        return color_variations
-    
-    def _analyze_tongue_shape(self, contour):
-        """Analyze tongue shape characteristics"""
-        # Calculate shape metrics
-        area = cv2.contourArea(contour)
-        perimeter = cv2.arcLength(contour, True)
-        
-        # Aspect ratio
-        x, y, w, h = cv2.boundingRect(contour)
-        aspect_ratio = float(w) / h
-        
-        # Extent (area ratio)
-        rect_area = w * h
-        extent = float(area) / rect_area
-        
-        # Solidity (convex hull ratio)
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
-        solidity = float(area) / hull_area
-        
-        # Determine shape characteristics
-        elongated = aspect_ratio > 1.5  # More elongated than normal
-        swollen = extent > 0.8 and solidity > 0.9  # Very filled and smooth
-        
-        return {
-            'elongated': elongated,
-            'swollen': swollen,
-            'aspect_ratio': aspect_ratio,
-            'extent': extent,
-            'solidity': solidity
-        }
 
-    def create_annotated_image(self, image_path, features):
+    def create_annotated_image(self, image_path, features, classification=None):
         """
-        Create an annotated image with detected features
+        Create an annotated image with detected features and optional classification
         """
         try:
             print(f"Creating annotated image for {image_path}")
@@ -650,37 +635,42 @@ class TongueAnalyzer:
                     draw.text((x, y-30), "Tongue Region", fill='green', font=font)
                 print(f"Drew tongue region: {x}, {y}, {w}, {h}")
             
-            # Draw cracks/fissures
+            # Draw cracks/fissures with count
             if features and features['cracks']:
-                for i, ((x1, y1), (x2, y2)) in enumerate(features['cracks'][:10]):  # Limit for performance
+                for i, ((x1, y1), (x2, y2)) in enumerate(features['cracks'][:10]):  # Limit to first 10 for visibility
                     draw.line([x1, y1, x2, y2], fill='red', width=2)
-                print(f"Drew {min(len(features['cracks']), 10)} cracks")
+                print(f"Drew {len(features['cracks'])} cracks")
+                # Add label for cracks with count
+                crack_count = len(features['cracks'])
                 if font:
-                    draw.text((10, 10), f"Cracks: {len(features['cracks'])}", fill='red', font=font)
+                    draw.text((10, 10), f"Cracks: {crack_count} detected", fill='red', font=font)
             
-            # Draw coating areas
+            # Draw coating areas with count
             if features and features['coating']:
-                for cx, cy, cw, ch in features['coating'][:15]:  # Limit for performance
+                for cx, cy, cw, ch in features['coating']:
                     draw.rectangle([cx, cy, cx+cw, cy+ch], outline='blue', width=2)
-                print(f"Drew {min(len(features['coating']), 15)} coating areas")
+                # Add label for coating with count
+                coating_count = len(features['coating'])
                 if font:
-                    draw.text((10, 40), f"Coating: {len(features['coating'])}", fill='blue', font=font)
+                    draw.text((10, 40), f"Coating: {coating_count} areas detected", fill='blue', font=font)
             
-            # Draw color variations
+            # Draw color variations count only (no annotations on image)
             if features and features['color_variations']:
-                for cx, cy, cw, ch in features['color_variations'][:10]:  # Limit for performance
-                    draw.rectangle([cx, cy, cx+cw, cy+ch], outline='orange', width=1)
-                print(f"Drew {min(len(features['color_variations']), 10)} color variations")
+                # Add label for color variations with count only
+                color_count = len(features['color_variations'])
                 if font:
-                    draw.text((10, 70), f"Color Variations: {len(features['color_variations'])}", fill='orange', font=font)
+                    draw.text((10, 70), f"Color Variations: {color_count} detected", fill='orange', font=font)
             
-            # Draw teeth marks
+            # Draw teeth marks count only (no annotations on image)
             if features and features['teeth_marks']:
-                for tx, ty, tw, th in features['teeth_marks'][:8]:  # Limit for performance
-                    draw.ellipse([tx-tw//2, ty-th//2, tx+tw//2, ty+th//2], outline='purple', width=2)
-                print(f"Drew {min(len(features['teeth_marks']), 8)} teeth marks")
+                # Add label for teeth marks with count only
+                teeth_count = len(features['teeth_marks'])
                 if font:
-                    draw.text((10, 100), f"Teeth Marks: {len(features['teeth_marks'])}", fill='purple', font=font)
+                    draw.text((10, 100), f"Teeth Marks: {teeth_count} areas", fill='purple', font=font)
+            
+            # Draw AI classification if provided
+            if classification and font:
+                draw.text((10, 130), f"AI Classification: {classification}", fill='blue', font=font)
             
             return original_image.convert('RGB')
             
@@ -688,42 +678,6 @@ class TongueAnalyzer:
             print(f"Error creating annotated image: {e}")
             # Return original image if there's an error
             return Image.open(image_path)
-    
-    def _load_fonts(self):
-        """Load fonts with better fallback handling"""
-        try:
-            font_paths = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  # Linux
-                "/System/Library/Fonts/PingFang.ttc",  # macOS
-                "/System/Library/Fonts/STHeiti Light.ttc",  # macOS
-                "/System/Library/Fonts/Helvetica.ttc",  # macOS
-                "arial.ttf",  # Windows
-            ]
-            
-            # Try to load fonts in different sizes
-            font_large = font_medium = font_small = None
-            
-            for font_path in font_paths:
-                try:
-                    font_large = ImageFont.truetype(font_path, 28)
-                    font_medium = ImageFont.truetype(font_path, 20)
-                    font_small = ImageFont.truetype(font_path, 16)
-                    break
-                except:
-                    continue
-            
-            # Fallback to default fonts
-            if font_large is None:
-                font_large = ImageFont.load_default()
-                font_medium = ImageFont.load_default()
-                font_small = ImageFont.load_default()
-            
-            return font_large, font_medium, font_small
-            
-        except:
-            default_font = ImageFont.load_default()
-            return default_font, default_font, default_font
 
     def classify(self, image_path):
         """
@@ -752,58 +706,6 @@ class TongueAnalyzer:
                 'primary_classification': 'error',
                 'confidence': 0.0,
                 'all_probabilities': []
-            }
-    
-    def _intelligent_fallback_classification(self, image):
-        """
-        Intelligent fallback classification based on basic image analysis
-        """
-        try:
-            # Convert to numpy array for analysis
-            img_array = np.array(image)
-            
-            # Analyze average color
-            avg_color = np.mean(img_array, axis=(0, 1))
-            r, g, b = avg_color
-            
-            # Convert to HSV for better color analysis
-            hsv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-            avg_hsv = np.mean(hsv_img, axis=(0, 1))
-            h, s, v = avg_hsv
-            
-            # Simple heuristic classification based on color
-            if r > 150 and g < 120:  # Reddish
-                if s > 100:  # High saturation
-                    classification = '红舌黄苔'
-                else:
-                    classification = '红舌白苔'
-            elif r < 130 and g > 120:  # Pale/whitish
-                classification = '淡白舌白苔'
-            elif b > 130:  # Bluish/purple
-                classification = '青紫舌白苔'
-            else:  # Default to normal
-                classification = '淡红舌白苔'
-            
-            # Calculate a rough confidence based on color distinctiveness
-            color_variance = np.std(img_array)
-            confidence = min(0.6, color_variance / 255 * 0.6 + 0.2)
-            
-            return {
-                'primary_classification': classification,
-                'confidence': confidence,
-                'all_probabilities': [0.1] * len(self.categories),
-                'fallback_method': 'color_analysis',
-                'avg_color': avg_color.tolist(),
-                'needs_review': True
-            }
-            
-        except Exception as e:
-            print(f"Fallback classification failed: {e}")
-            return {
-                'primary_classification': self.categories[0],
-                'confidence': 0.1,
-                'all_probabilities': [0.1] * len(self.categories),
-                'error': str(e)
             }
 
 class QuestionnaireAnalyzer:
@@ -888,26 +790,8 @@ class ResultIntegrator:
         
         return output.strip() if output.strip() else "No specific recommendations at this time."
 
-# Initialize global analyzer instances with error handling
-try:
-    print("Initializing tongue analyzer...")
-    tongue_analyzer = TongueAnalyzer()
-    print("Tongue analyzer initialized successfully")
-except Exception as e:
-    print(f"Error initializing tongue analyzer: {e}")
-    # Create a minimal analyzer for health checks
-    class MinimalAnalyzer:
-        def __init__(self):
-            self.model_loaded = False
-            self.categories = ['淡白舌白苔']
-        def classify(self, path):
-            return {'primary_classification': '淡白舌白苔', 'confidence': 0.5}
-        def detect_tongue_features(self, path):
-            return {'tongue_region': None, 'cracks': [], 'coating': []}
-        def create_annotated_image(self, path, features):
-            return Image.open(path)
-    tongue_analyzer = MinimalAnalyzer()
-
+# Initialize global analyzer instances
+tongue_analyzer = TongueAnalyzer()
 questionnaire_analyzer = QuestionnaireAnalyzer()
 result_integrator = ResultIntegrator()
 
@@ -1002,7 +886,9 @@ def analyze_tongue():
         # Create annotated image
         print("Creating annotated image...")
         try:
-            annotated_image = tongue_analyzer.create_annotated_image(temp_image_path, features)
+            # Add random number to classification for display
+            classification_with_number = f"{classification_result['primary_classification']} {random.randint(1, 3)}"
+            annotated_image = tongue_analyzer.create_annotated_image(temp_image_path, features, classification_with_number)
             print("Annotated image creation complete")
         except Exception as e:
             print(f"Annotated image creation failed: {e}")
@@ -1025,9 +911,7 @@ def analyze_tongue():
         if os.path.exists(temp_image_path):
             os.remove(temp_image_path)
         
-        # Add random number to classification
-        random_num = random.randint(1, 3)
-        classification_with_number = f"{classification_result['primary_classification']} {random_num}"
+        # Use the same classification with number that was used for the image
         
         # Return comprehensive results for Flutter
         return jsonify({
@@ -1039,12 +923,8 @@ def analyze_tongue():
                 'tongue_region': features['tongue_region'] is not None if features else False,
                 'cracks_detected': len(features['cracks']) > 0 if features else False,
                 'coating_detected': len(features['coating']) > 0 if features else False,
-                'color_variations_detected': len(features['color_variations']) > 0 if features else False,
-                'teeth_marks_detected': len(features['teeth_marks']) > 0 if features else False,
                 'crack_count': len(features['cracks']) if features else 0,
-                'coating_count': len(features['coating']) if features else 0,
-                'color_variation_count': len(features['color_variations']) if features else 0,
-                'teeth_mark_count': len(features['teeth_marks']) if features else 0
+                'coating_count': len(features['coating']) if features else 0
             },
             'questionnaire_results': questionnaire_results,
             'filename': image_file.filename
