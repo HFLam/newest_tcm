@@ -51,6 +51,10 @@ class TongueAnalyzer:
                 '淡红舌白苔', '青紫舌白苔', '青紫舌黄苔', '青紫舌灰黑苔', '淡白舌灰黑苔'
             ]
             self.category_to_idx = {cat: idx for idx, cat in enumerate(self.categories)}
+            
+            # Create a default model even if file doesn't exist
+            self.model = models.resnet50(pretrained=False)
+            self.model.fc = nn.Linear(self.model.fc.in_features, len(self.categories))
         
         self.model = self.model.to(self.device)
         self.model.eval()
