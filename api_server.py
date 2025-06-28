@@ -618,8 +618,8 @@ class TongueAnalyzer:
         """
         try:
             print(f"Creating annotated image for {image_path}")
-            # Open original image
-            original_image = Image.open(image_path)
+            # Open original image and ensure it's RGB
+            original_image = Image.open(image_path).convert('RGB')
             draw = ImageDraw.Draw(original_image)
             
             # Use default font to avoid hanging on font loading
@@ -630,58 +630,88 @@ class TongueAnalyzer:
                 font = None
                 print("No font available")
             
-            # Draw tongue region
-            if features and features['tongue_region']:
+            # Ensure features is not None
+            if not features:
+                print("No features provided, using empty features")
+                features = {'tongue_region': None, 'cracks': [], 'coating': [], 'color_variations': [], 'teeth_marks': []}
+            
+            # Draw tongue region with better visibility
+            if features.get('tongue_region'):
                 x, y, w, h = features['tongue_region']
-                # Draw rectangle around tongue
-                draw.rectangle([x, y, x+w, y+h], outline='green', width=3)
+                # Draw rectangle around tongue with thicker line
+                draw.rectangle([x, y, x+w, y+h], outline='lime', width=4)
                 if font:
-                    draw.text((x, y-30), "Tongue Region", fill='green', font=font)
+                    draw.text((x, max(0, y-35)), "Tongue Region", fill='lime', font=font)
                 print(f"Drew tongue region: {x}, {y}, {w}, {h}")
             
-            # Draw cracks/fissures with count
-            if features and features['cracks']:
-                for i, ((x1, y1), (x2, y2)) in enumerate(features['cracks'][:10]):  # Limit to first 10 for visibility
-                    draw.line([x1, y1, x2, y2], fill='red', width=2)
-                print(f"Drew {len(features['cracks'])} cracks")
+            # Draw cracks/fissures with count and better visibility
+            cracks = features.get('cracks', [])
+            if cracks:
+                for i, crack in enumerate(cracks[:15]):  # Limit to first 15 for visibility
+                    if len(crack) >= 2:
+                        (x1, y1), (x2, y2) = crack[0], crack[1]
+                        # Convert numpy types to regular ints if needed
+                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        draw.line([x1, y1, x2, y2], fill='red', width=3)
+                print(f"Drew {len(cracks)} cracks")
                 # Add label for cracks with count
-                crack_count = len(features['cracks'])
+                crack_count = len(cracks)
                 if font:
                     draw.text((10, 10), f"Cracks: {crack_count} detected", fill='red', font=font)
             
-            # Draw coating areas with count
-            if features and features['coating']:
-                for cx, cy, cw, ch in features['coating']:
-                    draw.rectangle([cx, cy, cx+cw, cy+ch], outline='blue', width=2)
+            # Draw coating areas with count and better visibility
+            coating = features.get('coating', [])
+            if coating:
+                for i, area in enumerate(coating[:10]):  # Limit to first 10
+                    if len(area) >= 4:
+                        cx, cy, cw, ch = area
+                        cx, cy, cw, ch = int(cx), int(cy), int(cw), int(ch)
+                        draw.rectangle([cx, cy, cx+cw, cy+ch], outline='blue', width=3)
                 # Add label for coating with count
-                coating_count = len(features['coating'])
+                coating_count = len(coating)
                 if font:
                     draw.text((10, 40), f"Coating: {coating_count} areas detected", fill='blue', font=font)
             
-            # Draw color variations count only (no annotations on image)
-            if features and features['color_variations']:
-                # Add label for color variations with count only
-                color_count = len(features['color_variations'])
+            # Draw color variations count
+            color_variations = features.get('color_variations', [])
+            if color_variations:
+                color_count = len(color_variations)
                 if font:
                     draw.text((10, 70), f"Color Variations: {color_count} detected", fill='orange', font=font)
             
-            # Draw teeth marks count only (no annotations on image)
-            if features and features['teeth_marks']:
-                # Add label for teeth marks with count only
-                teeth_count = len(features['teeth_marks'])
+            # Draw teeth marks count
+            teeth_marks = features.get('teeth_marks', [])
+            if teeth_marks:
+                teeth_count = len(teeth_marks)
                 if font:
                     draw.text((10, 100), f"Teeth Marks: {teeth_count} areas", fill='purple', font=font)
             
             # Draw AI classification if provided
             if classification and font:
-                draw.text((10, 130), f"AI Classification: {classification}", fill='blue', font=font)
+                draw.text((10, 130), f"AI Classification: {classification}", fill='darkblue', font=font)
             
-            return original_image.convert('RGB')
+            # Add a summary box in the bottom right
+            if font:
+                img_width, img_height = original_image.size
+                summary_text = f"Analysis Complete"
+                draw.text((img_width-200, img_height-30), summary_text, fill='green', font=font)
+            
+            print("Annotated image created successfully")
+            return original_image
             
         except Exception as e:
             print(f"Error creating annotated image: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             # Return original image if there's an error
-            return Image.open(image_path)
+            try:
+                return Image.open(image_path).convert('RGB')
+            except:
+                # Create a simple error image if all else fails
+                error_img = Image.new('RGB', (400, 300), color='white')
+                error_draw = ImageDraw.Draw(error_img)
+                error_draw.text((50, 150), "Error creating annotated image", fill='red')
+                return error_img
 
     def classify(self, image_path):
         """
@@ -888,26 +918,42 @@ def analyze_tongue():
         final_results = result_integrator.integrate(questionnaire_results, classification_result['primary_classification'])
         print("Integration complete")
         
-        # Detect features for visualization (simplified)
+        # Detect features for visualization (comprehensive)
         print("Detecting features...")
         try:
             features = analyzer.detect_tongue_features(temp_image_path)
-            print("Feature detection complete")
+            print(f"Feature detection complete: {len(features.get('cracks', []))} cracks, {len(features.get('coating', []))} coating areas")
         except Exception as e:
             print(f"Feature detection failed: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             features = {'tongue_region': None, 'cracks': [], 'coating': [], 'color_variations': [], 'teeth_marks': []}
         
-        # Create annotated image
+        # Ensure features are valid
+        if not features:
+            features = {'tongue_region': None, 'cracks': [], 'coating': [], 'color_variations': [], 'teeth_marks': []}
+        
+        # Create annotated image with comprehensive error handling
         print("Creating annotated image...")
         try:
-            # Add random number to classification for display
+            # Add random number to classification for display consistency
             classification_with_number = f"{classification_result['primary_classification']} {random.randint(1, 3)}"
             annotated_image = analyzer.create_annotated_image(temp_image_path, features, classification_with_number)
             print("Annotated image creation complete")
         except Exception as e:
             print(f"Annotated image creation failed: {e}")
-            # Fallback to original image
-            annotated_image = Image.open(temp_image_path)
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            # Fallback to original image with error handling
+            try:
+                annotated_image = Image.open(temp_image_path).convert('RGB')
+                print("Using original image as fallback")
+            except Exception as e2:
+                print(f"Failed to load original image: {e2}")
+                # Create a simple error image
+                annotated_image = Image.new('RGB', (400, 300), color='white')
+                draw = ImageDraw.Draw(annotated_image)
+                draw.text((50, 150), "Image processing error", fill='red')
         
         # Convert annotated image to base64 for Flutter
         print("Converting image to base64...")
@@ -924,8 +970,6 @@ def analyze_tongue():
         # Clean up temporary files
         if os.path.exists(temp_image_path):
             os.remove(temp_image_path)
-        
-        # Use the same classification with number that was used for the image
         
         # Return comprehensive results for Flutter
         return jsonify({
