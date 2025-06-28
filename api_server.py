@@ -840,12 +840,108 @@ def get_tongue_analyzer():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for Flutter app"""
+    """Health check endpoint for Railway and Flutter app"""
+    try:
+        import time
+        start_time = time.time()
+        
+        # Basic health info
+        health_info = {
+            'status': 'healthy',
+            'message': 'Tongue Analysis API is running',
+            'server_ready': True,
+            'timestamp': time.time(),
+            'checks': {}
+        }
+        
+        # Check if we can import required modules
+        try:
+            import torch
+            import cv2
+            import numpy as np
+            from PIL import Image
+            health_info['checks']['dependencies'] = 'ok'
+        except Exception as e:
+            health_info['checks']['dependencies'] = f'error: {str(e)}'
+            health_info['status'] = 'degraded'
+        
+        # Check if model can be loaded (without actually loading it to save time)
+        try:
+            model_path = "best_tongue_classification_model.pth"
+            if os.path.exists(model_path):
+                health_info['checks']['model_file'] = 'found'
+            else:
+                health_info['checks']['model_file'] = 'missing (will use default)'
+        except Exception as e:
+            health_info['checks']['model_file'] = f'error: {str(e)}'
+        
+        # Check memory and basic system info
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            health_info['checks']['memory'] = f'{memory.percent}% used'
+        except:
+            health_info['checks']['memory'] = 'unavailable'
+        
+        # Check if we can create a simple image (PIL test)
+        try:
+            test_img = Image.new('RGB', (100, 100), color='white')
+            health_info['checks']['image_processing'] = 'ok'
+        except Exception as e:
+            health_info['checks']['image_processing'] = f'error: {str(e)}'
+            health_info['status'] = 'degraded'
+        
+        # Response time
+        response_time = (time.time() - start_time) * 1000
+        health_info['response_time_ms'] = round(response_time, 2)
+        
+        # Set appropriate HTTP status code
+        status_code = 200 if health_info['status'] == 'healthy' else 503
+        
+        return jsonify(health_info), status_code
+        
+    except Exception as e:
+        # Emergency fallback health check
+        return jsonify({
+            'status': 'error',
+            'message': f'Health check failed: {str(e)}',
+            'server_ready': False
+        }), 503
+
+# Additional health check endpoints for Railway
+@app.route('/', methods=['GET'])
+def root_health():
+    """Root endpoint that Railway might check"""
     return jsonify({
-        'status': 'healthy',
-        'message': 'Tongue Analysis API is running',
-        'server_ready': True
+        'service': 'TCM Tongue Analysis API',
+        'status': 'running',
+        'version': '2.0',
+        'endpoints': ['/health', '/analyze', '/classify-only']
     })
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    """Simple ping endpoint for basic connectivity"""
+    return 'pong', 200
+
+@app.route('/ready', methods=['GET'])
+def readiness_check():
+    """Readiness check that includes model loading"""
+    try:
+        # Try to get the analyzer (this will load the model if needed)
+        analyzer = get_tongue_analyzer()
+        return jsonify({
+            'status': 'ready',
+            'model_loaded': True,
+            'message': 'Service is ready to accept requests'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'not_ready',
+            'model_loaded': False,
+            'error': str(e),
+            'message': 'Service is starting up, please wait'
+        }), 503
 
 @app.route('/analyze', methods=['POST'])
 def analyze_tongue():
@@ -1061,5 +1157,24 @@ def classify_only():
 
 if __name__ == '__main__':
     import os
+    import sys
+    
+    # Get port from environment (Railway sets this)
     port = int(os.environ.get('PORT', 8000))
-    app.run(debug=False, host='0.0.0.0', port=port) 
+    
+    print(f"🚀 Starting TCM Tongue Analysis API on port {port}")
+    print(f"🔍 Health check available at: http://0.0.0.0:{port}/health")
+    print(f"📊 Ready check available at: http://0.0.0.0:{port}/ready")
+    
+    try:
+        # Start the Flask app with production settings
+        app.run(
+            debug=False,           # Disable debug mode for production
+            host='0.0.0.0',       # Listen on all interfaces
+            port=port,            # Use Railway's PORT
+            threaded=True,        # Enable threading for better performance
+            use_reloader=False    # Disable reloader for production
+        )
+    except Exception as e:
+        print(f"❌ Failed to start server: {e}")
+        sys.exit(1) 
